@@ -38,9 +38,9 @@ class RobotController(Node):
     def command_callback(self, msg: FollowJointTrajectory):
         """Handle incoming joint trajectory commands."""
         # Here you can process the command further or send it to the robot
+        self.new_action = True
         self.cancel_all_goals()
         future = self.send_joint_command(msg.trajectory.joint_names, msg.trajectory.points[0].positions, msg.trajectory.points[0].time_from_start.nanoseconds / 1e9)
-        future.add_done_callback(self.get_result)
 
 if __name__ == '__main__':
     rclpy.init()
