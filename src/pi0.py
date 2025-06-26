@@ -43,7 +43,7 @@ class Args:
     # Host and port to connect to the server.
     host: str = "0.0.0.0"
     # Port to connect to the server. If None, the server will use the default port.
-    port: int | None = 5555
+    port: int | None = 8000
     # API key to use for the server.
     api_key: str | None = None
     # Number of steps to run the policy for.
@@ -193,7 +193,7 @@ class joint_states_listener(Node):
         self.subscriber = self.create_subscription(JointState, topic=topic, callback=self.callback, qos_profile=default_qos_profile)
 
     def callback(self, data):
-        if self.joint_state is not None: 
+        if self.joint_states is not None: 
             return
         self.joint_states = data
 
@@ -208,8 +208,8 @@ class PiService(Node):
         args = Args()
         self.logger = self.get_logger()
         default_qos_profile = QoSProfile(depth=5)
-        self.wrist_subscriber = RGBListener("color/image_wrist", node_name='wrist_rgb_listener')
-        self.base_subscriber = RGBListener("color/image_base", node_name='base_rgb_listener')
+        self.wrist_subscriber = RGBListener("/wrist_camera/color/image_raw", node_name='wrist_rgb_listener')
+        self.base_subscriber = RGBListener("/base_camera/color/image_raw", node_name='base_rgb_listener')
         self.joint_state_subscriber = joint_states_listener(topic='/joint_states')
         self.gripper = np.zeros((1,), dtype=np.float32)  # Placeholder for gripper state
         # self.prompt_subscriber = self.node.create_subscription(String, topic='/prompt', callback=self.prompt_callback, qos_profile=default_qos_profile)
@@ -242,13 +242,12 @@ class PiService(Node):
     def obs_fun(self, prompt) -> dict:
         """Generate a random observation for the UR5E environment."""
         obs = {
-            "joints": np.array(self.joint_state_subscriber.get().position),
-            "gripper": self.gripper,
-            "base_rgb": self.base_subscriber.get(),
-            "wrist_rgb": self.wrist_subscriber.get(),
+            "joints": np.array(self.joint_states),
+            "gripper": np.array([0.8]),
+            "base_rgb": np.array(self.base_subscriber.get(), dtype=np.uint8),
+            "wrist_rgb": np.array(self.wrist_subscriber.get(), dtype=np.uint8),
             "prompt": prompt,
         }
-        self.joint_commands = obs["joints"].copy()
         return obs
 
     def run(self, prompt: str = "do something") -> None:
@@ -257,7 +256,12 @@ class PiService(Node):
 
             # Run the policy inference.
             inference_start = time.time()
-            actions = self.policy.infer(self.obs_fun(prompt))["actions"]
+            self.joint_states = self.joint_state_subscriber.get().position
+            obs = _random_observation_ur5e()
+            obs["joints"] = np.array(self.joint_states)
+            self.logger.info(f"Joint states: {self.joint_states}")
+            actions = self.policy.infer(obs)["actions"]
+            # actions = self.policy.infer(self.obs_fun(prompt))["actions"]
             self.logger.info(f"Policy actions: {actions}")
 
             # Create a joint command message.
@@ -271,11 +275,22 @@ class PiService(Node):
                 "wrist_2_joint",
                 "wrist_3_joint",
             ]
-            joint_command.trajectory.points = [JointTrajectoryPoint(positions=actions, time_from_start=rclpy.duration.Duration(seconds=1.0))]
+            
+            self.joint_states = np.array(self.joint_states, dtype=np.float32)
+            for i in range(10):
+                joint_command.trajectory.points.append(
+                    JointTrajectoryPoint(
+                        positions=actions[i][:6].tolist(),
+                        velocities=[0.05] * 6,  # Placeholder for velocities
+                        accelerations=[0.08] * 6,  # Placeholder for accelerations
+                        time_from_start=rclpy.duration.Duration(seconds=0.01).to_msg(),  # Placeholder for time from start
+                    )
+                )
             self.logger.info(f"Joint command: {joint_command}")
             # Send the joint command to the action server.
             self.controller.send_goal_async(joint_command)
-            self.controller.get_result_async()
+            self.controller._get_result_async()
+            self.logger.info("Joint command sent to the action server.")
             # self.timing_recorder.record("client_infer_ms", 1000 * (time.time() - inference_start))
             # for key, value in actions.get("server_timing", {}).items():
             #     self.timing_recorder.record(f"server_{key}", value)
