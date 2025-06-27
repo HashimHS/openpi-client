@@ -11,6 +11,8 @@ from std_msgs.msg import String
 from control_msgs.action import FollowJointTrajectory 
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint 
 from rclpy.action import ActionClient
+import cv2
+import os
 
 # OpenPi
 import dataclasses
@@ -223,28 +225,28 @@ class PiService(Node):
         self.logger.info(f"Server metadata: {self.policy.get_server_metadata()}")
 
         # Send a few observations to make sure the model is loaded.
-        self.logger.info("Sending initial observations to make sure the model is loaded.")
-        obs_fn = _random_observation_ur5e
-        for _ in range(2):
-            results = self.policy.infer(obs_fn())
-        self.logger.info(f"Policy results: {results}")
+        # self.logger.info("Sending initial observations to make sure the model is loaded.")
+        # obs_fn = _random_observation_ur5e
+        # for _ in range(2):
+        #     results = self.policy.infer(obs_fn())
+        # self.logger.info(f"Policy results: {results}")
 
         self.timing_recorder = TimingRecorder()
         
         # Create an action client for the arm joint trajectory controller.
         self.logger.info("Waiting for the joint trajectory controller action server...")
-        self.controller = ActionClient(self, FollowJointTrajectory, '/joint_trajectory_controller/follow_joint_trajectory')
-        # self.controller = ActionClient(self, FollowJointTrajectory, '/scaled_joint_trajectory_controller/follow_joint_trajectory')
+        # self.controller = ActionClient(self, FollowJointTrajectory, '/joint_trajectory_controller/follow_joint_trajectory')
+        self.controller = ActionClient(self, FollowJointTrajectory, '/scaled_joint_trajectory_controller/follow_joint_trajectory')
         self.controller.wait_for_server()
         self.logger.info("Joint trajectory controller action server is ready.")
         
-        self.run(prompt="pick up the object")
+        self.run(prompt="pick red cube")
 
     def obs_fun(self, prompt) -> dict:
         """Generate a random observation for the UR5E environment."""
         return {
             "joints": np.array(self.joint_state_subscriber.get().position),
-            "gripper": np.array([0.8]),
+            "gripper": np.array([0.008]),
             "base_rgb": np.array(self.base_subscriber.get(), dtype=np.uint8),
             "wrist_rgb": np.array(self.wrist_subscriber.get(), dtype=np.uint8),
             "prompt": prompt,
@@ -253,14 +255,18 @@ class PiService(Node):
     def run(self, prompt: str = "do something") -> None:
         """Run the PiService with the given prompt."""
         while rclpy.ok():
-
+            # Hit enter to continue.
+            self.logger.info(f"Running policy inference with prompt: {prompt}")
+            # input("Press Enter to continue...")
             # Run the policy inference.
             inference_start = time.time()
             # obs = _random_observation_ur5e()
             obs = self.obs_fun(prompt)
+            self.logger.info(f"image_shape: {obs['base_rgb'].shape}, {obs['wrist_rgb'].shape}")
             self.logger.info(f"Joint states: {obs['joints']}")
-            actions = self.policy.infer(obs)["actions"]
-            self.logger.info(f"Policy actions: {actions}")
+            results = self.policy.infer(obs)
+            actions = results["actions"]
+            self.logger.info(f"Policy actions: {results}")
             # for i in range(actions.shape[0]):
             #     self.point_publisher.publish(
             #         JointTrajectoryPoint(
@@ -283,22 +289,24 @@ class PiService(Node):
                 "wrist_3_joint",
             ]
 
-            for i in range(10):
+            for i in range(3):
                 joint_command.trajectory.points.append(
                     JointTrajectoryPoint(
                         positions=actions[i][:6].tolist(),
-                        time_from_start=rclpy.duration.Duration(seconds=1 * (i + 1)).to_msg(),
+                        time_from_start=rclpy.duration.Duration(seconds=(5 + 0.1 * (i + 1))).to_msg(),
                     )
                 )
-            self.logger.info(f"Joint command: {joint_command}")
+
             # Send the joint command to the action server.
             self.controller.send_goal_async(joint_command)
+            # self.controller._get_result_async()
             self.logger.info("Joint command sent to the action server.")
-            # self.timing_recorder.record("client_infer_ms", 1000 * (time.time() - inference_start))
-            # for key, value in actions.get("server_timing", {}).items():
-            #     self.timing_recorder.record(f"server_{key}", value)
-            # for key, value in actions.get("policy_timing", {}).items():
-            #     self.timing_recorder.record(f"policy_{key}", value)
+
+            self.timing_recorder.record("client_infer_ms", 1000 * (time.time() - inference_start))
+            for key, value in results.get("server_timing", {}).items():
+                self.timing_recorder.record(f"server_{key}", value)
+            for key, value in results.get("policy_timing", {}).items():
+                self.timing_recorder.record(f"policy_{key}", value)
 
 def _random_observation_aloha() -> dict:
     return {
